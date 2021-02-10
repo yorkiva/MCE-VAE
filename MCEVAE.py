@@ -269,20 +269,6 @@ class MCEVAE(Model):
         x = F.grid_sample(x, grid, padding_mode=padding_mode, align_corners=False)
         return x
     
-
-    # def log_p(self, z):
-    #     log_prior = log_Normal_standard(z, dim=1)
-    #     return log_prior
-
-    # def rand_rotate(self, x, tau):
-    #     M, _= self.get_M(tau)
-    #     x_trans = self.transform(x, M)
-    #     z_aug = self.aug_encoder(x_trans)
-    #     z_q_mu, z_q_logvar = self.q_z(z_aug)
-    #     z_q = self.reparameterize(z_q_mu, z_q_logvar)
-    #     x_rec, _ = self.reconstruct(z_q)
-    #     return x_rec
-
     def forward(self, x):
         z_aug = self.aug_encoder(x)
         z_var_q_mu, z_var_q_logvar = self.q_z_var(z_aug)
@@ -298,10 +284,6 @@ class MCEVAE(Model):
         return x_hat, z_var_q, z_var_q_mu, z_var_q_logvar, z_c_q, z_c_q_mu, z_c_q_logvar, z_c_q_L, tau_q, tau_q_mu, tau_q_logvar, x_rec, M
         
 
-    # def get_x_init(self, x, M):
-    #     x_init = self.transform(x, M, direction='reverse')
-    #     return x_init.detach()
-
     def get_x_ref(self, x, tau_q):
         noise = (torch.rand_like(tau_q) - 1)*0.5 + 0.25
         noise[:,0] = (torch.rand(noise.shape[0]) - 1)*2*np.pi + np.pi
@@ -311,36 +293,3 @@ class MCEVAE(Model):
         x_ref_trans = self.transform(x, M_n, direction='forward')
         return x_ref_trans
 
-    # def compute_mmd(self, z, reg_weight):
-    #     prior_z = torch.randn_like(z)
-    #     prior_z__kernel = self.compute_kernel(prior_z, prior_z)
-    #     z__kernel = self.compute_kernel(z, z)
-    #     priorz_z__kernel = self.compute_kernel(prior_z, z)
-
-    #     mmd = reg_weight * prior_z__kernel.mean() + reg_weight * z__kernel.mean() - 2 * reg_weight * priorz_z__kernel.mean()
-    #     return mmd
-
-    # def compute_kernel(self, x1, x2):
-    #     # Convert the tensors into row and column vectors
-    #     D = x1.size(1)
-    #     N = x1.size(0)
-
-    #     x1 = x1.unsqueeze(-2)  # Make it into a column tensor
-    #     x2 = x2.unsqueeze(-3)  # Make it into a row tensor
-    #     x1 = x1.expand(N, N, D)
-    #     x2 = x2.expand(N, N, D)
-    #     result = self.compute_inv_mult_quad(x1, x2)
-    #     return result
-
-    # def compute_inv_mult_quad(self, x1, x2, eps: float = 1e-7):
-    #     z_dim = x2.size(-1)
-    #     C = 2 * z_dim * 2.
-    #     kernel = C / (eps + C + (x1 - x2).pow(2).sum(dim=-1))
-
-    #     # Exclude diagonal elements
-    #     result = kernel.sum() - kernel.diag().sum()
-    #     return result
-    
-    # def log_p_tau(self, tau):
-    #     log_prior = log_Normal_standard(tau, dim=1)
-    #     return log_prior
