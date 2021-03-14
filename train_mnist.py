@@ -5,11 +5,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from MCEVAE import MCEVAE
 from utils import load_checkpoint
+from sklearn.mixture import GaussianMixture
 import argparse
 
+# def gmm_clustering(z_c_q, model):
+#     GM = GaussianMixture(n_components = model.latent_n_c, covariance_type = 'diag').fit(z_c_q.detach().cpu().numpy())
+#     model.pi = torch.tensor(GM.weights_, dtype=torch.float32).reshape(model.latent_n_c, 1).to(model.device)
+#     model.mu_c = torch.tensor(GM.means_, dtype=torch.float32).reshape(model.latent_n_c, 1, model.latent_z_c).to(model.device)
+#     model.log_sigma2_c = torch.log(torch.tensor(GM.covariances_, dtype=torch.float32).reshape(model.latent_n_c, 1, model.latent_z_c)).to(model.device)
+
+
 def calc_loss(model, x, x_init, beta=1., n_sampel=4):
-    x_hat, z_var_q, z_var_q_mu, z_var_q_logvar, \
-    z_c_q, z_c_q_mu, z_c_q_logvar, z_c_q_L, tau_q, tau_q_mu, tau_q_logvar, x_rec, M = model(x)
+    x_hat,\
+    z_var_q, z_var_q_mu, z_var_q_logvar, \
+    z_c_q, z_c_q_mu, z_c_q_logvar, z_c_q_L,\
+    tau_q, tau_q_mu, tau_q_logvar, x_rec, M = model(x)
+
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
     x = x.view(-1, model.in_size).to(device)
@@ -22,7 +34,7 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
             RE_INV = torch.sum((x_rec - x_init)**2)
         elif model.tau_size > 0 and model.training_mode == 'unsupervised':
             RE_INV = torch.FloatTensor([0.]).to(device)
-            for jj in range(25):
+            for jj in range(50):
                 with torch.no_grad():
                     x_arb = model.get_x_ref(x.view(-1,1,int(np.sqrt(model.in_size)),int(np.sqrt(model.in_size))), tau_q)
                     z_aug_arb = model.aug_encoder(x_arb)
@@ -33,10 +45,12 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
                     x_init, _ = model.reconstruct(z_var_q_arb, z_c_q_arb)
                     x_init = x_init.view(-1, model.in_size).to(device)
                     x_init = torch.clamp(x_init, 1.e-5, 1-1.e-5)
-                RE_INV = RE_INV + torch.sum((z_var_q_arb - z_var_q)**2)
-                RE_INV = RE_INV + torch.sum((z_c_q_arb - z_c_q)**2) 
+                if model.latent_z_var > 0:
+                    RE_INV = RE_INV + torch.sum((z_var_q_arb - z_var_q)**2)
+                if model.latent_z_c > 0:
+                    RE_INV = RE_INV + torch.sum((z_c_q_arb - z_c_q)**2) 
                 RE_INV = RE_INV + torch.sum((x_rec - x_init)**2)
-            RE_INV = RE_INV/25.0
+            RE_INV = RE_INV/50.0
         else:
             RE_INV = torch.FloatTensor([0.]).to(device)
     elif model.rec_loss == 'bce':
@@ -84,9 +98,19 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
     if z_c_q.size()[0] == 0:
         log_q_z_c, log_p_z_c = torch.FloatTensor([0.]).to(device), torch.FloatTensor([0.]).to(device)
     else:
-        log_q_z_c = -torch.sum(0.5*(1 + z_c_q_logvar/model.latent_z_c + \
-                                       (model.latent_z_c -1)*z_c_q**2/model.latent_z_c))
-        log_p_z_c = -torch.sum(0.5*(z_c_q**2 )) + torch.sum(z_c_q)/model.latent_z_c
+        if model.classifier != 'vade':
+            log_q_z_c = -torch.sum(0.5*(1 + z_c_q_logvar/model.latent_z_c + \
+                                           (model.latent_z_c -1)*z_c_q**2/model.latent_z_c))
+            #log_q_z_c = -torch.sum(0.5*(1 + z_c_q_logvar)) # + (1 - z_c_pi)*z_c_q**2))
+            log_p_z_c = -torch.sum(0.5*(z_c_q**2 )) + torch.sum(z_c_q)/model.latent_z_c
+        else:
+            gamma_c = model.gamma_c(z_c_q)
+            pi_c = model.pi_c()
+            log_q_z_c = torch.sum(gamma_c*torch.log(gamma_c)) -0.5*torch.sum(z_c_q_logvar)
+            log_p_z_c = torch.sum(gamma_c*torch.log(pi_c)) \
+                        -0.5*torch.sum(torch.sum(model.log_sigma2_c, dim=(2))*gamma_c) \
+                        -0.5*torch.sum(torch.sum(((z_c_q - model.mu_c)/torch.exp(0.5*model.log_sigma2_c))**2, dim=2)*gamma_c)
+        
 
     likelihood = - (RE + RE_INV)/x.shape[0]
     divergence_c = (log_q_z_c - log_p_z_c)/x.shape[0]
@@ -94,6 +118,7 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
 
 
     loss = - likelihood + beta * divergence_var_tau + divergence_c
+    #gmm_clustering(z_c_q, model)
     return loss, RE/x.shape[0], divergence_var_tau, divergence_c
 
 
@@ -112,6 +137,8 @@ def train_epoch(data, model, optim, epoch, num_epochs, N, beta):
         loss, reco_loss, divergence_var_tau, divergence_c = calc_loss(model, x, x_init, beta = beta)
         loss.backward()
         optim.step()
+        #model.pi_c = torch.clamp(model.pi_c, 1.e-10, 1-1.e-10)
+        #model.pi_c = model.pi_c/torch.sum(model.pi_c)
         c += 1
         train_loss += loss.item()
         train_reco_loss += reco_loss.item()
@@ -148,14 +175,16 @@ def test_epoch(data, model, beta):
 def train(model, optim, train_data, test_data, num_epochs=20, 
           tr_mode='new', beta = 1.0):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')    
-    modelname = "model_{}_{}_dEnt_{}_ddisEnt_{}_{}_{}_{}_checkpoint".format(model.mode, 
-                                                                            model.invariance_decoder,
-                                                                            model.latent_z_c,
-                                                                            model.latent_z_var,
-                                                                            model.tag,
-                                                                            model.training_mode,
-                                                                            model.rec_loss)
-    # print(modelname)
+    modelname = "model_{}_aug_{}_inv_{}_nc_{}_dc_{}_dvar_{}_class_{}_{}_{}_checkpoint".format(model.mode, 
+                                                                                        model.aug_enc_type,
+                                                                                        model.invariance_decoder,
+                                                                                        model.latent_n_c,
+                                                                                        model.latent_z_c,
+                                                                                        model.latent_z_var,
+                                                                                        model.classifier,
+                                                                                        model.tag,
+                                                                                        model.training_mode,
+                                                                                        model.rec_loss)
     if tr_mode == 'resume' and os.path.exists('models/' + modelname):
         print("Loading old model")
         model, optim, epoch = load_checkpoint(model, optim, 'models/' + modelname)
@@ -211,7 +240,11 @@ if __name__ == '__main__':
     parser.add_argument("--nHiddenTrans", help = "Number of Nodes in Hidden Layers for Transformational Latent Space", default = 32)
     parser.add_argument("--tag", help = "tag for model name", default = "default")
     parser.add_argument("--training_mode", help = "Training mode: use supervised or unsupervised", default = "supervised")
-    parser.add_argument("--beta", help = "Beta for beta-VAE training", default = 1.0)    
+    parser.add_argument("--beta", help = "Beta for beta-VAE training", default = 1.0)
+    parser.add_argument("--model_mode", help = "Model mode: new or resume", default = 'new')
+    parser.add_argument("--aug_enc", help = "Augmented encoder type: linear or cnn", default = 'cnn')
+    parser.add_argument("--classifier", help = "Classifier type: mixgm or vade", default = 'mixgm')
+   
     args = parser.parse_args()
 
     print('loading data...')
@@ -228,34 +261,46 @@ if __name__ == '__main__':
     trans_test_dataset = torch.utils.data.TensorDataset(torch.from_numpy(mnist_SE2_test),
                                                         torch.from_numpy(mnist_SE2_init_test))
     trans_test_loader = torch.utils.data.DataLoader(trans_test_dataset, batch_size=batch_size)
+    
     in_size = aug_dim = 28*28
-    mode = transformation.upper()
         
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tag = str(args.tag)
     model = MCEVAE(in_size=in_size,
-                     aug_dim=aug_dim,
-                     latent_z_c=int(args.nCat),
-                     latent_z_var=int(args.nVar),
-                     mode=mode, 
-                     invariance_decoder='gated', 
-                     rec_loss=str(args.loss_type), 
-                     div='KL',
-                     in_dim=1, 
-                     out_dim=1, 
-                     hidden_z_c=int(args.nHiddenCat),
-                     hidden_z_var=int(args.nHiddenVar),
-                     hidden_tau=int(args.nHiddenTrans), 
-                     activation=nn.Sigmoid,
-                     training_mode=str(args.training_mode),
-                     device = device,
-                     tag = tag).to(device)
-    lr = 1e-3
+                   aug_dim=aug_dim,
+                   latent_z_c=int(args.nCat),
+                   latent_n_c=int(args.nCat),
+                   latent_z_var=int(args.nVar),
+                   aug_enc_type=str(args.aug_enc),
+                   mode=transformation.upper(), 
+                   invariance_decoder='gated', 
+                   rec_loss=str(args.loss_type), 
+                   classifier=str(args.classifier),
+                   in_dim=1, 
+                   out_dim=1, 
+                   hidden_z_c=int(args.nHiddenCat),
+                   hidden_z_var=int(args.nHiddenVar),
+                   hidden_tau=int(args.nHiddenTrans), 
+                   activation=nn.Sigmoid,
+                   training_mode=str(args.training_mode),
+                   device = device,
+                   tag = str(args.tag)).to(device)
+    
+    lr = 2e-3
     optim = torch.optim.Adam(model.parameters(), lr=lr)
+#     if bool(args.load_old):
+#         modelname = "model_{}_{}_dEnt_{}_ddisEnt_{}_{}_{}_{}_checkpoint".format(model.mode, 
+#                                                                             model.invariance_decoder,
+#                                                                             model.latent_z_c,
+#                                                                             model.latent_z_var,
+#                                                                             model.tag,
+#                                                                             model.training_mode,
+#                                                                             model.rec_loss)
+#         model, optim, epoch = load_checkpoint(model, optim, 'models/' + modelname)
+#         training_loss = 
     train(model = model,
           optim = optim,
           train_data = trans_loader, 
           test_data = trans_test_loader, 
           num_epochs = int(args.nEpochs), 
-          tr_mode='new',
+          tr_mode=str(args.model_mode),
           beta = float(args.beta))

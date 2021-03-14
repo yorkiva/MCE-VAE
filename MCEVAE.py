@@ -11,12 +11,14 @@ class MCEVAE(Model):
     def __init__(self, 
                  in_size=28*28,
                  aug_dim=16*7*7,
-                 latent_z_c=0,
-                 latent_z_var=5,
+                 latent_z_c=5,
+                 latent_n_c=10,
+                 latent_z_var=3,
+                 aug_enc_type='cnn',
                  mode='SO2', 
                  invariance_decoder='gated', 
                  rec_loss='mse', 
-                 div='KL',
+                 classifier='mixgm',
                  in_dim=1, 
                  out_dim=1, 
                  hidden_z_c=300,
@@ -27,14 +29,17 @@ class MCEVAE(Model):
                  device = 'cpu',
                  tag = 'default'):
         super(MCEVAE, self).__init__()
+        if (latent_z_c == 0 and latent_n_c != 0) or (latent_z_c != 0 and latent_n_c == 0):
+            print("Requested {} dimensional latent clustering space for {} dimensional clustering. Please fix your choices".format(latent_z_c, latent_n_c))
+            sys.exit(1)
         self.mode = mode
         self.invariance_decoder = invariance_decoder
         self.rec_loss = rec_loss
-        self.div_mode = div
         self.hidden_z_c = hidden_z_c
         self.hidden_z_var = hidden_z_var
         self.hidden_tau = hidden_tau
         self.latent_z_c = latent_z_c
+        self.latent_n_c = latent_n_c
         self.latent_z_var = latent_z_var
         self.in_dim = in_dim
         self.out_dim = out_dim
@@ -43,8 +48,29 @@ class MCEVAE(Model):
         self.device= device
         self.training_mode = training_mode
         self.tag = tag
+        self.aug_enc_type = aug_enc_type
+        self.classifier = classifier
+        
+        if latent_n_c != 0 and classifier == 'vade':
+            self.prior = nn.Parameter(torch.ones((latent_n_c, 1), dtype=torch.float32, requires_grad=True, device = device)/(latent_n_c))
+            if latent_n_c == 2*latent_z_c:
+                self.mu_c = nn.Parameter(torch.cat((torch.eye(latent_z_c), -torch.eye(latent_z_c)), 0).reshape(latent_n_c,1,latent_z_c).requires_grad_(True).to(device))
+            elif latent_n_c == latent_z_c:
+                self.mu_c = nn.Parameter(torch.eye(latent_n_c, dtype=torch.float32, requires_grad=True, device = device).reshape(latent_n_c,1,latent_z_c))
+            else:
+                self.mu_c = nn.Parameter(torch.randn((latent_n_c, 1, latent_z_c), dtype = torch.float32, requires_grad = True,  device = device))
+            self.log_sigma2_c = nn.Parameter(torch.zeros((latent_n_c, 1, latent_z_c), dtype=torch.float32, requires_grad=True,  device = device))
 
-        print('in_size: {}, latent_z_c: {}, latent_z_var:{}, mode: {}, sem_dec: {}, rec_loss: {}, div: {}'.format(in_size, latent_z_c, latent_z_var, mode, invariance_decoder, rec_loss, div))
+#         if latent_n_c != 0:
+#             self.pi_c = torch.ones((latent_n_c, 1), dtype=torch.float32, requires_grad=False, device = device)/(latent_n_c)
+#             if latent_n_c == 2*latent_z_c:
+#                 self.mu_c = torch.cat((torch.eye(latent_z_c), -torch.eye(latent_z_c)), 0).reshape(latent_n_c,1,latent_z_c).to(device)
+#             else:
+#                 self.mu_c = torch.randn((latent_n_c, 1, latent_z_c), dtype = torch.float32, requires_grad = False,  device = device)
+#             self.log_sigma2_c = torch.zeros((latent_n_c, 1, latent_z_c), dtype=torch.float32, requires_grad=False,  device = device)
+                        
+
+        print('in_size: {}, aug enc:{}, latent_z_c: {}, latent_z_var:{}, mode: {}, sem_dec: {}, rec_loss: {}, classifier: {}'.format(in_size, aug_enc_type, latent_z_c, latent_z_var, mode, invariance_decoder, rec_loss, classifier))
         
         # transformation type
         if mode == 'SO2':
@@ -67,18 +93,30 @@ class MCEVAE(Model):
         self.tau_size = tau_size
         
         # augmented encoder
-        self.aug_enc = nn.Sequential(
-            nn.Conv2d(in_dim, 32, kernel_size=5, stride=1, padding=2, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.Conv2d(32, 32, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ELU(),
-            nn.Conv2d(64, 16, kernel_size=5, stride=1, padding=2, bias=True)
-        )
+        if self.aug_enc_type == 'cnn':
+            self.aug_enc = nn.Sequential(
+                nn.Conv2d(in_dim, 32, kernel_size=5, stride=1, padding=2, bias=False),
+                nn.BatchNorm2d(32),
+                nn.ELU(),
+                nn.Conv2d(32, 32, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(32),
+                nn.ELU(),
+                nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(64),
+                nn.ELU(),
+                nn.Conv2d(64, 16, kernel_size=5, stride=1, padding=2, bias=True)
+            )
+        else:
+            raise NotImplementedError
+#             self.aug_enc =nn.Sequential(
+#                 nn.Linear(in_dim*in_size, 1024),
+#                 nn.Sigmoid(),
+#                 nn.Linear(1024, 2048),
+#                 nn.Sigmoid(),
+#                 nn.Linear(2048, 1024),
+#                 nn.Sigmoid(),
+#                 nn.Linear(1024, aug_dim)
+#             )
         
         # transformation extractor
         if tau_size > 0:
@@ -124,6 +162,8 @@ class MCEVAE(Model):
                 nn.Sigmoid(),
                 nn.Linear(hidden_z_c, hidden_z_c),
                 nn.Sigmoid(),
+                #nn.Linear(hidden_z_c, hidden_z_c),
+                #nn.Sigmoid(),
                 nn.Linear(hidden_z_c, latent_z_c)
             )
         
@@ -132,9 +172,21 @@ class MCEVAE(Model):
                 nn.Sigmoid(),
                 nn.Linear(hidden_z_c, hidden_z_c),
                 nn.Sigmoid(),
+                #nn.Linear(hidden_z_c, hidden_z_c),
+                #nn.Sigmoid(),
                 nn.Linear(hidden_z_c, latent_z_c)
             )
-        
+            
+#             self.pi_z_c = nn.Sequential(
+#                 nn.Linear(latent_z_c, hidden_z_c),
+#                 nn.Sigmoid(),
+#                 nn.Linear(hidden_z_c, hidden_z_c),
+#                 nn.Sigmoid(),
+#                 nn.Linear(hidden_z_c, latent_z_c),
+#                 nn.Softmax()
+#             )
+
+
         # invariance decoder
         if invariance_decoder == 'linear':
             self.p_x_layer = nn.Sequential(
@@ -149,6 +201,7 @@ class MCEVAE(Model):
         elif invariance_decoder == 'gated':
             self.p_x_layer = nn.Sequential(
                 GatedDense(latent_z_c + latent_z_var, 300),
+                #GatedDense(512, 512),
                 GatedDense(300, 300),
                 NonLinear(300, np.prod(in_size), activation=activation())
             )
@@ -168,8 +221,10 @@ class MCEVAE(Model):
             )
 
     def aug_encoder(self, x):
-        x = self.aug_enc(x)
-        z_aug = x.view(-1, self.aug_dim)
+        if self.aug_enc_type == 'cnn':
+            z_aug = self.aug_enc(x).view(-1,self.aug_dim)
+        else:
+            z_aug = self.aug_enc(x.view(-1, self.in_size*self.in_dim)).view(-1, self.aug_dim)
         return z_aug
 
     def q_z_var(self, z_aug):
@@ -187,6 +242,17 @@ class MCEVAE(Model):
         z_c_q_logvar = self.q_z_c_logvar(z_aug)
         return z_c_q_mu, z_c_q_logvar, torch.FloatTensor([])
 
+    def gamma_c(self, z_c_q):
+        sigma_c = torch.exp(0.5*self.log_sigma2_c)
+        pzc = torch.prod(torch.exp(-0.5*((z_c_q - self.mu_c)/sigma_c)**2)/sigma_c, 
+                         dim=2)*self.pi_c() + 1.e-10
+        pzc_sum = torch.sum(pzc, dim = (0,)).reshape(1,-1)
+        return pzc/pzc_sum  # returns tensor of shape (nC, batch_size)
+    
+    def pi_c(self):
+        #return torch.exp(self.prior)/torch.sum(torch.exp(self.prior))
+        return self.prior
+    
     
     def q_tau(self, z_aug):
         if self.tau_size == 0:
@@ -275,18 +341,22 @@ class MCEVAE(Model):
         z_var_q = self.reparameterize(z_var_q_mu, z_var_q_logvar).to(self.device)
         z_c_q_mu, z_c_q_logvar, z_c_q_L = self.q_z_c(z_aug)
         z_c_q = self.reparameterize(z_c_q_mu, z_c_q_logvar, z_c_q_L).to(self.device)
+        #z_c_pi = self.pi_z_c(z_c_q_mu, z_c_q_logvar, z_c_q)
         tau_q_mu, tau_q_logvar = self.q_tau(z_aug)        
         tau_q = self.reparameterize(tau_q_mu, tau_q_logvar).to(self.device)
         M, params = self.get_M(tau_q)
         x_rec, _ = self.reconstruct(z_var_q, z_c_q) #nn.Softmax().forward(z_c_q))
         x_rec = x_rec.view(-1, 1, int(np.sqrt(self.in_size)), int(np.sqrt(self.in_size)))
         x_hat = self.transform(x_rec, M, direction='forward')
-        return x_hat, z_var_q, z_var_q_mu, z_var_q_logvar, z_c_q, z_c_q_mu, z_c_q_logvar, z_c_q_L, tau_q, tau_q_mu, tau_q_logvar, x_rec, M
+        return x_hat,\
+               z_var_q, z_var_q_mu, z_var_q_logvar,\
+               z_c_q, z_c_q_mu, z_c_q_logvar, z_c_q_L,\
+               tau_q, tau_q_mu, tau_q_logvar, x_rec, M
         
 
     def get_x_ref(self, x, tau_q):
         noise = (torch.rand_like(tau_q) - 1)*0.5 + 0.25
-        noise[:,0] = (torch.rand(noise.shape[0]) - 1)*2*np.pi + np.pi
+        noise[:,0] = (torch.rand(noise.shape[0]) - 1)*np.pi + np.pi/2
         if self.mode == 'SIM2':
             noise[:,-1] = 0.5*torch.rand(noise.shape[0]) + 0.5
         M_n, params_n = self.get_M(noise)
