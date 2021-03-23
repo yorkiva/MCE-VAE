@@ -34,7 +34,7 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
             RE_INV = torch.sum((x_rec - x_init)**2)
         elif model.tau_size > 0 and model.training_mode == 'unsupervised':
             RE_INV = torch.FloatTensor([0.]).to(device)
-            for jj in range(50):
+            for jj in range(25):
                 with torch.no_grad():
                     x_arb = model.get_x_ref(x.view(-1,1,int(np.sqrt(model.in_size)),int(np.sqrt(model.in_size))), tau_q)
                     z_aug_arb = model.aug_encoder(x_arb)
@@ -50,7 +50,7 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
                 if model.latent_z_c > 0:
                     RE_INV = RE_INV + torch.sum((z_c_q_arb - z_c_q)**2) 
                 RE_INV = RE_INV + torch.sum((x_rec - x_init)**2)
-            RE_INV = RE_INV/50.0
+            RE_INV = RE_INV/25.0
         else:
             RE_INV = torch.FloatTensor([0.]).to(device)
     elif model.rec_loss == 'bce':
@@ -75,8 +75,10 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
                     x_init, _ = model.reconstruct(z_var_q_arb, z_c_q_arb)
                     x_init = x_init.view(-1, model.in_size).to(device)
                     x_init = torch.clamp(x_init, 1.e-5, 1-1.e-5)
-                RE_INV = RE_INV + torch.sum((z_var_q_arb - z_var_q)**2)
-                RE_INV = RE_INV + torch.sum((z_c_q_arb - z_c_q)**2) 
+                if model.latent_z_var > 0:
+                    RE_INV = RE_INV + torch.sum((z_var_q_arb - z_var_q)**2)
+                if model.latent_z_c > 0:
+                    RE_INV = RE_INV + torch.sum((z_c_q_arb - z_c_q)**2) 
                 RE_INV = RE_INV - torch.sum((x_init*torch.log(x_rec) + (1-x_init)*torch.log(1-x_rec)))
             RE_INV = RE_INV/25.0
         else:
@@ -109,7 +111,8 @@ def calc_loss(model, x, x_init, beta=1., n_sampel=4):
             log_q_z_c = torch.sum(gamma_c*torch.log(gamma_c)) -0.5*torch.sum(z_c_q_logvar)
             log_p_z_c = torch.sum(gamma_c*torch.log(pi_c)) \
                         -0.5*torch.sum(torch.sum(model.log_sigma2_c, dim=(2))*gamma_c) \
-                        -0.5*torch.sum(torch.sum(((z_c_q - model.mu_c)/torch.exp(0.5*model.log_sigma2_c))**2, dim=2)*gamma_c)
+                        -0.5*torch.sum(torch.sum(((z_c_q_mu - model.mu_c)/torch.exp(0.5*model.log_sigma2_c))**2, dim=2)*gamma_c)\
+                        -0.5*torch.sum(torch.sum((torch.exp(z_c_q_logvar) - torch.zeros(model.mu_c.shape, device=model.device))/torch.exp(model.log_sigma2_c), dim=2)*gamma_c)
         
 
     likelihood = - (RE + RE_INV)/x.shape[0]
@@ -285,7 +288,7 @@ if __name__ == '__main__':
                    device = device,
                    tag = str(args.tag)).to(device)
     
-    lr = 2e-3
+    lr = 1e-3
     optim = torch.optim.Adam(model.parameters(), lr=lr)
 #     if bool(args.load_old):
 #         modelname = "model_{}_{}_dEnt_{}_ddisEnt_{}_{}_{}_{}_checkpoint".format(model.mode, 

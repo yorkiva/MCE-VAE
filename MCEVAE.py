@@ -61,14 +61,6 @@ class MCEVAE(Model):
                 self.mu_c = nn.Parameter(torch.randn((latent_n_c, 1, latent_z_c), dtype = torch.float32, requires_grad = True,  device = device))
             self.log_sigma2_c = nn.Parameter(torch.zeros((latent_n_c, 1, latent_z_c), dtype=torch.float32, requires_grad=True,  device = device))
 
-#         if latent_n_c != 0:
-#             self.pi_c = torch.ones((latent_n_c, 1), dtype=torch.float32, requires_grad=False, device = device)/(latent_n_c)
-#             if latent_n_c == 2*latent_z_c:
-#                 self.mu_c = torch.cat((torch.eye(latent_z_c), -torch.eye(latent_z_c)), 0).reshape(latent_n_c,1,latent_z_c).to(device)
-#             else:
-#                 self.mu_c = torch.randn((latent_n_c, 1, latent_z_c), dtype = torch.float32, requires_grad = False,  device = device)
-#             self.log_sigma2_c = torch.zeros((latent_n_c, 1, latent_z_c), dtype=torch.float32, requires_grad=False,  device = device)
-                        
 
         print('in_size: {}, aug enc:{}, latent_z_c: {}, latent_z_var:{}, mode: {}, sem_dec: {}, rec_loss: {}, classifier: {}'.format(in_size, aug_enc_type, latent_z_c, latent_z_var, mode, invariance_decoder, rec_loss, classifier))
         
@@ -108,16 +100,7 @@ class MCEVAE(Model):
             )
         else:
             raise NotImplementedError
-#             self.aug_enc =nn.Sequential(
-#                 nn.Linear(in_dim*in_size, 1024),
-#                 nn.Sigmoid(),
-#                 nn.Linear(1024, 2048),
-#                 nn.Sigmoid(),
-#                 nn.Linear(2048, 1024),
-#                 nn.Sigmoid(),
-#                 nn.Linear(1024, aug_dim)
-#             )
-        
+
         # transformation extractor
         if tau_size > 0:
             self.tau_mean = nn.Sequential(
@@ -177,14 +160,6 @@ class MCEVAE(Model):
                 nn.Linear(hidden_z_c, latent_z_c)
             )
             
-#             self.pi_z_c = nn.Sequential(
-#                 nn.Linear(latent_z_c, hidden_z_c),
-#                 nn.Sigmoid(),
-#                 nn.Linear(hidden_z_c, hidden_z_c),
-#                 nn.Sigmoid(),
-#                 nn.Linear(hidden_z_c, latent_z_c),
-#                 nn.Softmax()
-#             )
 
 
         # invariance decoder
@@ -313,7 +288,7 @@ class MCEVAE(Model):
             x_mean = torch.sigmoid(x_mean)
         else:
             x_mean = self.p_x_layer(z)
-        x_min = 1. / 512.
+        x_min = 1.e-5
         x_max = 1 - x_min
         x_rec = torch.clamp(x_mean, min=x_min, max=x_max)
         return x_rec, 0.
